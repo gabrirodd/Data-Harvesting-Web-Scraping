@@ -1,0 +1,1022 @@
+---
+title: "Data Harvesting"
+author: "Gabriel Rodríguez Molina"
+date: "2023-04-16"
+output: html_document
+---
+
+# Scraping the basic basket of products from DIA.
+
+In this project, we are scraping data from the websites of two major Spanish supermarkets: DIA and Carrefour. We are using XPATH to identify the specific information that we are looking for. Our goal is to obtain a list of basic products that are considered essential by Spanish institutions and that should be accessible to everyone. We hope that our IP address is not blocked by either website.
+
+The final result should be a comprehensive list of basic products, with accompanying details for each product. The list should include the following information for each product:
+
+-   Name. 
+-   Brand: This will help differentiate products from white label brands from other different ones. 
+-   Description: In order to know different features of the products, such as the packaging and so on. 
+-   Quantity: This is specified to compare different products more accurately. 
+-   Price: It is included to help customers make a budget-conscious decisions.
+
+This project has the potential to have a real impact on the lives of people who need to shop for groceries. Its unique feature is that it can be extended to include more supermarkets and URLs, allowing users to compare prices between stores and determine which store to shop at and which products to buy where. This could be a great resource to help people save money and make smarter shopping decisions. Also, if it was saved and measured over time it seems a good way to study inflation among many basic products.
+
+Let's start loading the different libraries that we have to use in order to develop the whole project:
+
+```{r, warning=FALSE, message=FALSE}
+library(xml2)
+library(httr)
+library(tidyverse)
+library(sf)
+library(rnaturalearth)
+library(scrapex)
+library(tm)
+library(stringr)
+library(ggplot2)
+library("viridis") 
+library(plotly)
+```
+
+For this project, we will be following similar guidelines to those used for the case of "Scraping Spanish school locations from the web". We will use the same webpage as a baseline, since the way in which the information is presented is convenient for our purposes. With this in mind, we can begin our project.
+
+## Starting with a scraper for just one page.
+
+The first step when conducting a scraping project like this is to test the code on one page and then replicate it for the remaining webpages with any necessary adjustments.
+
+For this particular example, the webpages chosen are www.DIA.es and www.carrefour.es, which both contain online shopping sections with prices of various products.
+
+The first two URL links we are using is the macaroni and milk from the product page on DIA and Carrefour respectively, since both are popular and widely available product. Once the code is tested on this page, it can then be extended to the other products in each webpage.
+
+```{r}
+macarrones <- "https://www.dia.es/compra-online/search?text=macarrones&x=0&y=0" 
+leche <- "https://www.carrefour.es/supermercado/la-despensa/lacteos/cat20011/c?q=leche"
+```
+
+In order to access the macaroni and milk sections of each website, we can create a character vector in R with the URL of the macaroni section. This will enable us to make use of the variables instead of copying the entire URL repeatedly.
+
+Once we have the URL, we can open the website in our local R studio and use a combination of developer tools in the browser and XPath in R to explore the website. This will allow us to find the section on which the different macaroni appears along with its price and other characteristics. These can then be used to gain insight into the products available on the website.
+
+```{r}
+DIA_macarrones <- read_html(macarrones) %>% xml_child()
+carrefour_leche <- read_html(leche) %>% xml_child()
+DIA_macarrones
+carrefour_leche
+```
+
+After running the code, it has been observed that nothing interesting appeared; just a bunch of strange characters. However, we noticed the word "javascript" which frightened us about potentially needing to use selenium.
+
+So, what we had to do then is observing more deeply the developer panel in the browser and start obtaining what we want. In this source code, it's all the information so we have to spend a little type looking for different strategies or, as the professor said "acting like a ninja" which is exactly the mood that I felt while doing it.
+
+Finally, after some trial and error, we were eventually able to find the correct tags to be used, allowing me to obtain the same results across different websites as the same pattern is repeated.
+
+The first information that I decided to store is the sentence with the different features of the products. In the case of DIA, the HTML code is structured in a consistent way, with a tag acting as the parent of an a tag, which has a class of "details". For Carrefour, we directly searched for all tags with a class "product-card_detail" followed by an a tag. This way we can take advantage of this and use the proper regex for both cases to select any capital letter continue including all the other elements to obtain exactly what we are looking for, it's a match!
+
+```{r}
+Macarrones<-DIA_macarrones %>% 
+  xml_find_all("//div/a//span[@class='details']") %>% 
+  xml_text()%>% 
+  str_extract_all("[A-Z].+")
+Macarrones<-Macarrones %>% 
+  .[1:length(Macarrones)]
+Macarrones
+```
+
+In our initial scraper for DIA, we encountered difficulties obtaining the correct number of detail columns that matched the price column. To address this, we introduced the function ".[1:length(Macarrones)]".
+
+```{r}
+Leche <- carrefour_leche %>% 
+  xml_find_all("//h2[@class='product-card__title']/a") %>% 
+  xml_text() %>% 
+  str_extract_all("([A-Z].+)")
+Leche
+```
+
+Once we delved into the issue, we discovered that the data that could be gathered was highly valuable. This was due to the many different features that could be derived from the earlier stage of extraction.:
+
+-   We are observing various brands, such as "DIA AL DIANTE", "DIA AL PUNTO", "CARREFOUR" and its "BIO" version, among others. We will group these all together as the product's brand.
+
+-   The second characteristic is the product's description, e.g. "macarrones a la boloñesa" or "macarrones BIO". This is an important attribute of the product.
+
+-   We also have the exact quantity of the product, which is an important factor to consider for further analysis.
+
+Once the information has been displayed, it is necessary to extract the individual components. To do this, Regular Expressions (REGEX) can be used to quickly and accurately identify the desired elements, something which can be tedious but is completely useful.
+
+Before leaving this section and starting with the process of data cleaning, there is one key point that we are missing, which is the most important feature, which are the different prices. With the previous tags and nodes, we didn't extract anything related with prices.
+
+Again, it's necessary to start acting like a ninja again and surfing along the whole webpage. In the case of DIA, we found out also that the tag
+
+<div>
+
+could be used, having this time a son whose class is not "details" but "price". For Carrefour we just needed to select all span tags with a class equal to "product-card\_\_price", an unique feature repeated along all products in the webpage.
+
+```{r}
+Macarrones_P<-DIA_macarrones %>%
+  xml_find_all("//div//p[@class='price']") %>% 
+  xml_text() %>% 
+  str_extract_all("[0-9].+") %>% 
+  lapply(`[[`, 1) %>% 
+  unlist()
+Macarrones_P<-Macarrones_P %>% 
+  .[1:length(Macarrones)]
+Macarrones_P
+```
+
+Here, we can see the same scenario as in the previous case. We have to coerce the number of rows in the case of price, to be the same number as for the case of the description. Also, it was really important to call for the *lapply()*. It was a headache problem, because when the product has any kind of discount, two different prices appear for each one. So, when we pretended to join the different information, the price column had one more variable, whereas with this function we got only the first element of this nested list.
+
+```{r}
+Price_2 <- carrefour_leche %>% 
+  xml_find_all("//span[@class='product-card__price']") %>% 
+  xml_text() %>% 
+  str_extract_all("\\d.+") %>% 
+  unlist()
+Price_2
+```
+
+Magic! We have two lists of six and eight each. As in the previous cases, we can find the price of the different macaroni and milk, which is everything that we wanted. Now, it's time to start with data cleaning and joining different data frames.
+
+### Data cleaning.
+
+In the previous step, we obtained the raw information, but the entire string was not very useful in its current form as it contained too much mixed data that could not be used as is.
+
+Upon inspection of the lists of DIA and Carrefour products, we noticed that there were different patterns present, such as the name of the brand in capital letters, or the numbers that indicated the weight or quantity of the product. We will leverage these unique characteristics when creating the regular expressions to parse the data.
+
+We aim to obtain the brand name of the product. For products from DIA, the brand name is always in capital letters. For Carrefour products, it is a bit more complex to obtain, as the product has the first letter capitalized as well as the name of the product. However, a pattern can be identified here too as the product is always the first in the sentence, so we can delete it after its extraction.
+
+```{r}
+Brand<-Macarrones %>% 
+  str_extract_all("\\b[A-Z]+\\b") %>% 
+  sapply(paste, collapse=" ") 
+Brand
+```
+
+```{r}
+Brand_2 <- Leche %>% 
+  str_extract_all("([A-Z][a-z]+.)") %>% 
+  lapply(function(x) x[-1]) %>% 
+  lapply(function(x) paste(x, collapse=" ")) %>% 
+  unlist()
+Brand_2
+```
+
+And now, after struggling with the regex, we managed to obtain the brand of the different product. This is really useful because we can compare them afterwards.
+
+Then, we would start with the description of the product to obtain more information, about if the product is cooked or not, or the way on which the food is presented.
+
+```{r}
+Description <- Macarrones %>% 
+  str_extract_all("[a-z].+[0-9]") %>% 
+  str_remove("[1]") %>% str_remove("[1]") %>%  str_remove("[ª]") %>% str_remove("[x]") %>% 
+  removeNumbers()
+Description
+```
+
+```{r}
+Description_2 <- Leche %>% 
+  str_extract_all("([A-Z][a-záéíóúñ].+[0-9])") %>%
+  unlist() %>%  
+  removeNumbers()
+Description_2
+```
+
+The next step is to extract the name of the product that is being scraped. This is essential in order to create a list of different URLs with various products, allowing comparison and analysis of prices across different supermarkets. This makes it possible to identify the cheapest option and make any deeper study about price gaps.
+
+In the case of Carrefour we face the same issue as before: both the product and the brand shre the common pattern starting by a capital letter, so we apply the same function in order to select the first term this time:
+
+```{r}
+Product<- Macarrones %>% 
+  str_extract_all("[a-z].+[0-9]") %>% 
+  str_remove("[1]") %>% str_remove("[1]") %>%  str_remove("[ª]") %>% 
+  str_extract_all("^[a-z].+?\\s") %>% 
+  unlist()
+Product
+```
+
+```{r}
+Product_2 <- Leche %>% 
+  str_extract_all("([A-Z][a-záéíóúñ]+.)") %>% 
+  lapply(function(x) x[1]) %>% 
+  unlist() 
+Product_2
+```
+
+Now, we can clearly know what is the product that we are dealing with, interesting!
+
+It can be useful to extract not only the price and name of a product but also the quantity being purchased. This is important because higher prices don't necessarily indicate a more expensive product. It could be that a larger quantity is being offered at a lower "quantity per kg" price, which means that even if the price is higher we are saving money; or we could be facing "shrinkflation" a technique that which makes a product appear to cost less reducing its amount.
+
+```{r}
+Quantity <- Macarrones %>% 
+  str_extract_all("[A-Z].+") %>% 
+  str_extract_all("[0-9].+") %>%
+  unlist()
+Quantity
+```
+
+```{r}
+Quantity_2 <- Leche %>% 
+  str_extract_all("[0-9].+") %>% 
+  unlist()
+Quantity_2
+```
+
+We can observe the quantity of the product along with the unit of measure which seems to be a really really interesting information.
+
+There is only one thing left, and it is the price of the different products. Let's obtain them.
+
+```{r}
+Macarrones_P
+```
+
+```{r}
+Price_2
+```
+
+Now we have all the elements that we need. We need to join to join all together in a data frame to handle all the collected data and observe if everything is merged properly and works as expected. Let's see it:
+
+```{r}
+df_macarrones <- data.frame(
+  Product = Product,
+  Brand = Brand,
+  Description = Description, 
+  Quantity = Quantity,
+  Price = Macarrones_P,
+  stringsAsFactors = F 
+)
+df_leche <- data.frame(
+  Product_2,
+  Brand_2,
+  Description_2, 
+  Quantity_2,
+  Price_2
+)
+```
+
+```{r}
+df_macarrones
+```
+
+```{r}
+df_leche
+```
+
+We have all the information required to make comparisons between different supermarkets for the same product. This includes the product type, brand and description, quantity, and price.
+
+This data can be used to determine which shop might offer the best value in terms of costs, helping us to make informed decisions about where to shop. In the future, this analysis could be extended to further refine our shopping choices.
+
+### Repeating the example with a second webpage.
+
+Before making a loop function to obtain the same information for different sections, we will try a second approach to see if everything works as it should be.
+
+In reality, we repeated this five times each, with five different URLs before leaving the whole function, however it doesn't make sense to include all of them.
+
+In this second trial we will be considering rice for DIA and fish for Carrefour. We start again by introducing the URL of each product:
+
+```{r}
+Rice <- "https://www.dia.es/compra-online/despensa/arroz-y-legumbres/arroz/cf"
+Fish <- "https://www.carrefour.es/supermercado/productos-frescos/pescaderia/cat20014/c"
+```
+
+Secondly, we read the whole webpage.
+
+```{r}
+DIA_rice <- read_html(Rice) %>% xml_child()
+Carrefour_fish <- read_html(Fish) %>% xml_child()
+DIA_rice
+Carrefour_fish
+```
+
+Third step, obtaining the general frame of price and details of the product.
+
+```{r}
+rice_info <- DIA_rice %>% 
+  xml_find_all("//div/a//span[@class='details']") %>% 
+  xml_text() %>%
+  str_extract_all("[A-Z].+") %>% 
+  unlist()
+rice_price <- DIA_rice %>%
+  xml_find_all("//div//p[@class='price']") %>% 
+  xml_text() %>% 
+  str_extract_all("[0-9].+") %>% 
+  lapply(`[[`, 1) %>% 
+  unlist()
+fish_info <- Carrefour_fish %>% 
+  xml_find_all("//h2[@class='product-card__title']/a") %>% 
+  xml_text() %>% 
+  str_extract_all("([A-Z].+)") %>% 
+  unlist()
+fish_price <- Carrefour_fish %>%
+  xml_find_all("//span[@class='product-card__price']") %>% 
+  xml_text() %>% 
+  str_extract_all("\\d.+") %>% 
+  unlist()
+```
+
+```{r}
+head(rice_info)
+```
+
+```{r}
+head(rice_price)
+```
+
+When attempting to extract the prices of fish from the Carrefour webpage, we noticed that the resulting data only contained the first six prices, while the rice_info variable contained eight character strings. We were unable to determine why this was occurring, as the HTML patterns were the same for all products on the webpage. Anyway, to ensure that all data variables can be joined together in a single data frame, we need to add an additional step to our incoming function to correct this issue.
+
+Fourth step consists in obtaining all the information using regex.
+
+```{r}
+Quanity<-rice_info %>% 
+  str_extract_all("[0-9] .+") %>% 
+  unlist() 
+Brand<-rice_info %>% 
+  str_extract_all("^[A-Z].+?\\s") %>% 
+  unlist() 
+Description<-rice_info %>% 
+  str_extract_all("[a-z].+[0-9]") %>% 
+  str_remove("[1]") %>% str_remove("[1]") %>%  str_remove("[ª]") %>% str_remove("[x]") %>% 
+  removeNumbers()
+Product<-rice_info %>% 
+  str_extract_all("[a-z].+[0-9]") %>% 
+  str_remove("[1]") %>% str_remove("[1]") %>%  str_remove("[ª]") %>% 
+  str_extract_all("^[a-z].+?\\s") %>% 
+  unlist()
+Price<- rice_price %>% 
+  str_extract_all("[0-9].+\\€") %>% 
+  unlist()
+Price_2 <- fish_price %>% 
+  str_extract_all("\\d.+") %>% 
+  unlist()
+Brand_2 <- fish_info %>% 
+  str_extract_all("([A-Z][a-z]+.)") %>% 
+  lapply(function(x) x[-1]) %>% 
+  lapply(function(x) paste(x, collapse=" ")) %>% 
+  unlist()
+Description_2 <- fish_info %>% 
+  str_extract_all("([A-Z][a-záéíóúñ].+[0-9])") %>%
+  unlist() %>%  
+  removeNumbers()
+Product_2 <- fish_info %>% 
+  str_extract_all("([A-Z][a-záéíóúñ]+.)") %>% 
+  lapply(function(x) x[1]) %>% 
+  unlist() 
+Quantity_2 <- fish_info %>% 
+  str_extract_all("[0-9].+") %>% 
+  unlist()
+```
+
+Except the different amount of rows in the case of the Carrefour products everything else seems to work perfectly. Finally, we have to add each group together in a data frame. We are only showing it for the DIA products as the issue related to the Carrefour products must be fixed before.
+
+```{r}
+df_arroz <- data.frame(
+  Product = Product,
+  Brand = Brand,
+  Description = Description, 
+  Quanity = Quanity,
+  Price = Price,
+  stringsAsFactors = F
+)
+head(df_arroz)
+```
+
+In this first case, we can observe how the expected results are achieved. This is great as it allows us to create a function to aggregate all our findings, making it easier to scrape multiple products at once. Now, it's time to start scraping all the different products, instead of just a single item.
+
+## Launching the scraper to the different products for DIA and Carrefour.
+
+If we want to scrape multiple web pages, we need to create a loop in our code to automate the process. This means that instead of manually running the code over each page, we can set up the script to iterate through all the pages and scrape the necessary data from each one. Within the loop, we can include the same code we used for scraping the single page, with some modifications to enable it to move between pages.
+
+We can implement this process to multiple links by creating a function. This function should include all the necessary steps to obtain the information from each link. We should first test the function with a single URL before using it for multiple links.
+
+In this case, we will introduce a modified code for Carrefour that will allow us to scrape the same number of rows for all variables. We noticed that when extracting prices, sometimes the output is 6 or 7 elements instead of 8. To address this, our function will count the number of elements, and then discard any surplus elements from the other variables. The second issue is related to the variable "brand", as it is not always specified (for example for some fresh products). In the functionm when we create the data frame, the empty spaces are converted into characters called "NA" before joining the different variables. This is done to ensure that there is the same number of rows.
+
+```{r}
+DIA_grabber<- function(URL){
+  
+  Sys.sleep(6)
+  
+  DIA_macarrones <- read_html(URL) %>% xml_child()
+  
+  Macarrones<- DIA_macarrones %>% 
+  xml_find_all("//div/a//span[@class='details']") %>% 
+  xml_text() %>% 
+  str_extract_all("[A-Z].+") 
+  
+  Macarrones<-Macarrones%>% 
+  .[1:length(Macarrones)]
+  
+  Quantity<-Macarrones %>% 
+  str_extract_all("[0-9].+") %>% 
+  unlist()
+  Brand<-Macarrones %>% 
+    str_extract_all("\\b[A-Z]+\\b") %>% 
+    sapply(paste, collapse=" ")
+  
+  Description<-Macarrones %>% 
+  str_extract_all("[a-z].+[0-9]") %>% 
+  str_remove("[1]") %>% str_remove("[1]") %>%  str_remove("[ª]") %>% 
+  str_remove("[x]") %>% str_remove("[.]") %>% 
+  removeNumbers()
+  
+  Product<- Macarrones %>% 
+    str_extract_all("[a-z].+[0-9]") %>% 
+    str_remove("[1]") %>% str_remove("[1]") %>%  str_remove("[ª]") %>% 
+    str_extract_all("^[a-z].+?\\s") %>% 
+    unlist()
+  
+  Macarrones_P<-DIA_macarrones %>%
+  xml_find_all("//div//p[@class='price']") %>% 
+  xml_text() %>% 
+  str_extract_all("[0-9].+") %>% 
+  lapply(`[[`, 1) %>% 
+  unlist()
+  
+  
+  P<-Macarrones_P %>% 
+  .[1:length(Macarrones)] %>% 
+   str_extract_all("[0-9].+\\€") %>% 
+   unlist()
+  
+  data.frame(
+    Product = Product,
+    Brand = Brand,
+    Description = Description,
+    Quantity = Quantity,
+    Price = P,
+    stringsAsFactors = FALSE
+  )
+}
+```
+
+```{r}
+carrefour_grabber <- function(URL) {
+  Sys.sleep(123)
+  info <- 
+    read_html(URL) %>% 
+    xml_child()
+  
+Sys.sleep(5)
+  
+Price <- info %>% 
+  xml_find_all("//span[@class='product-card__price']") %>% 
+  xml_text() %>% 
+  str_extract_all("\\d.+") %>% 
+  lapply(`[[`, 1)
+n_price = 
+  Price %>% 
+  length ()
+Price <-
+  Price %>% unlist()
+  
+Product <- info %>% 
+  xml_find_all("//h2[@class='product-card__title']/a") %>% 
+  xml_text() %>% 
+  str_extract_all("([A-Z][a-záéíóúñ]+.)") %>% 
+  lapply(function(x) x[1]) %>% 
+  unlist() 
+Brand <- info %>% 
+  xml_find_all("//h2[@class='product-card__title']/a") %>% 
+  xml_text() %>% 
+  str_extract_all("([A-Z][a-záéíóúñ]+.)") %>% 
+  lapply(function(x) x[-1]) %>% 
+  lapply(function(x) paste(x, collapse=" ")) %>%  
+  lapply(function(x) if (x == "") "NA" else x) %>% 
+  unlist() 
+Description <-
+  read_html(URL) %>% 
+  xml_child() %>% 
+  xml_find_all("//h2[@class='product-card__title']/a") %>% 
+  xml_text() %>% 
+  str_extract_all("([A-Z][a-záéíóúñ].+[0-9])") %>% 
+  lapply(function(x) x[1]) %>% 
+  unlist() %>%  
+  removeNumbers()
+Quantity <- info %>% 
+  xml_find_all("//h2[@class='product-card__title']/a") %>% 
+  xml_text() %>% 
+  str_extract_all("[0-9].+") %>% 
+  unlist()
+data.frame(
+    Price = head(Price, n_price),
+    Product = head(Product, n_price),
+    Brand = head(Brand, n_price),
+    Description = head(Description, n_price),
+    Quantity = head(Quantity, n_price)
+  )
+}
+```
+
+These are the functions that we are using to obtain the whole core of information. We will try it with just one single URL to see what happens. I selected the product "friegasuelos".
+
+```{r}
+URL<- c("https://www.dia.es/compra-online/search?sort=price-asc&q=friegasuelos%3Arelevance#")
+Products <- map_dfr(URL, DIA_grabber)
+head(Products)
+```
+
+It works perfectly for just one single case. Let's run it for the case of 4 different products before the introductions of the whole core of URLs.
+
+```{r}
+URLs<- c("https://www.dia.es/compra-online/search?text=macarrones&x=0&y=0",
+         "https://www.dia.es/compra-online/search?sort=price-asc&q=Margarina%3Arelevance#",
+         "https://www.dia.es/compra-online/despensa/arroz-y-legumbres/arroz/cf")
+```
+
+```{r}
+Products <- map_dfr(URLs, DIA_grabber)
+Products
+```
+
+### Full scrapex for DIA.
+
+Now we can try it all together. Let's load the full scraper for DIA, in order to obtain a data frame with everything inside.
+
+```{r}
+links_DIA<- 
+  c("https://www.dia.es/compra-online/despensa/arroz-y-legumbres/arroz/cf",
+    "https://www.dia.es/compra-online/despensa/arroz-y-legumbres/legumbres/cf/producto+lentejas",
+    "https://www.dia.es/compra-online/despensa/arroz-y-legumbres/legumbres/cf/producto+garbanzos",
+    "https://www.dia.es/compra-online/search?text=macarrones&x=0&y=0",
+    "https://www.dia.es/compra-online/search?text=pasta+dentifrica&x=0&y=0",
+    "https://www.dia.es/compra-online/despensa/lacteos-y-huevos/yogures/cf",
+    "https://www.dia.es/compra-online/despensa/pan/pan-de-molde/cf",
+    "https://www.dia.es/compra-online/frescos/charcuteria-y-quesos/cocidos/cf",
+    "https://www.dia.es/compra-online/despensa/sopas/caldos/cf", 
+    "https://www.dia.es/compra-online/despensa/salsas/tomate/cf",
+    "https://www.dia.es/compra-online/search?text=jabon+de+manos",
+    "https://www.dia.es/compra-online/despensa/lacteos-y-huevos/yogures/cf",
+    "https://www.dia.es/compra-online/search?text=Margarina",
+    "https://www.dia.es/compra-online/cuidado-del-hogar/productos-de-limpieza/hogar/cf/producto+fregasuelos",
+    "https://www.dia.es/compra-online/despensa/desayunos-y-dulces/galletas/cf",
+    "https://www.dia.es/compra-online/despensa/pastas-harinas-y-masas/pastas/cf/tipo+fideos",
+    "https://www.dia.es/compra-online/despensa/lacteos-y-huevos/leche/cf",
+    "https://www.dia.es/compra-online/despensa/aceites-vinagres-y-alinos/aceites/cf")
+```
+
+```{r}
+Products_dia <- map_dfr(links_DIA, DIA_grabber)
+head(Products_dia)
+```
+
+### Cleaning the data for the DIA data frame.
+
+As you may have noticed, the raw dataset obtained from the scraper tool was somewhat cumbersome and incomplete. Furthermore, the data is not completely harmonized, which makes it impossible to perform thorough comparisons. Therefore, it is essential to undertake the tedious task of cleaning the data before conducting any further analysis on the dataset.
+
+Find below the code that we need to use to develop it::
+
+```{r, warning=F}
+Products_dia <- Products_dia %>% 
+  mutate(
+    Product = str_trim(Product, "right"),
+    Product = as.factor(Product),
+    Product = fct_collapse(Product,
+  "garbanzos" = c("garbanzo", "cous"),
+  "lentejas" = c("lentenja", "lenteja"),
+  "dentifrico" = c("otal", "pasta"),
+  "pan de molde" = c("pan", "hogaza"),
+  "pasta" = c("macarrones", "macarrón"),
+  "yogurt" = c("yogur", "cremoso", "bífidus", "petit"),
+  "galletas"= c("galletas", "galleta", "inosaurus", "diet", "iet", "ctive", "chocoaros", "jaffa", "mini", "zero", "arbú", "osta", "bocaditos", "tosta", "ostaRica"),
+  "friegasuelos" = c("fregasuelos", "friegasuelos", "limpiador", "limpiahogar", "detergente"),
+  "gel" = c("aby", "jabón", "esponjas"), 
+  "fiambre" = c("inissimas",  "chopped", "lacón", "pechuga", "pavo", "mortadela", "fiambre", "jamón", "magro", "barquillo", "salchichas"),
+  "aceite" = c("ritos", "ol", "set"),
+  "caldo" =c("ourmet", "caldo", "doble","aldo", "fumet"),
+  "arroz" = c("mezcla"),
+  "salsas" = c("salsa", "pisto", "sofrito", "isto", "tomate"),
+  "leche" = c("ax", "bebida"),
+  "fideos" = "fideo",
+  "mantequilla/margarina" = c("mantequilla", "margarina")
+  ),
+  Description = str_remove_all(Description, "paquete|caja|vaso|bandeja|bolsa| frasco|etra|tubo|%|categoria|pack|unidades|envase|lata|sobre|estuche|aby|MG|botella|spray|PACK|lt|Nº"),
+  Quantity = str_remove_all(Quantity, "1ª categoría paquete|3 arroces paquete|0% M.G pack|1º botella|0% con frutas pack 8 unidades|0% pack|100% integral sin corteza bolsa|12 cereales y semillas bolsa|15 cereales y semillas bolsa|100% bolsa|100% integral bolsa|8 cereales bolsa|100% natural envase|100% natural frasco|0% M.G. sin lactosa envase"),
+  Supermarket = "DIA"
+  )
+```
+
+We've encountered an issue with the dataset where the price variable is stored as a character, making it unusable for further analysis. In order to make meaningful comparisons, we need to convert the price variable from character to numeric using the *as.numeric* function.
+
+```{r}
+Products_dia<- Products_dia %>%
+  mutate(
+    New_price = str_remove(Price, "[€]"),
+    New_price = str_replace_all(New_price,"[,]", "."),
+    New_price = str_trim(New_price, "right"),
+    New_price = as.numeric(New_price)
+  ) %>% 
+  select(!Price)
+Products_dia<- Products_dia %>% 
+  rename(
+    "Price" = "New_price"
+  ) 
+Products_dia<- Products_dia %>% 
+  select(Product, Supermarket, Brand, Description, Quantity, Price)
+head(Products_dia)
+```
+
+### Basic analysis for DIA.
+
+The dataframe has now been fully cleaned, and is ready for further analysis. It would be helpful to visualize the price distribution of products with similar characteristics. For instance, we could plot the price of different legumes and identify which ones offer better value for money.
+
+Let's begin by selecting a basic set of variables such as "arroz, lentejas and garbanzos" to observe their price distribution. With only three variables, the resulting dataframe is small enough to visualize easily."
+
+```{r}
+DF_legumes <-Products_dia %>% 
+  filter(
+    Product == c("arroz","lentejas","garbanzos")
+  ) %>% 
+  arrange(Price)
+head(DF_legumes)
+```
+
+It is worth noting that, in general, "garbanzos and arroz" are less expensive than "lentejas." Additionally, the first brand that appears for both "garbanzos" and "arroz" is the white brand, which suggests that it is less expensive than the original brands.
+
+Yogurt is another commonly purchased item, so it would be interesting to observe similar behavior as before but with a different product.
+
+```{r}
+Products_dia %>% 
+  filter(
+    Product == "yogurt"
+  ) %>% 
+  arrange(Price)
+```
+
+The price behavior for yogurt is similar to the previous case. The first brands that appear in the results belong to the white brand, while the more expensive options are the different original brands.
+
+Now that we have a cleaner dataframe, there are various transformations we can apply to further refine our data. After the arduous task of building an effective scraper, we now have useful information that needs to be presented effectively.
+
+We have decided to present two lists, one featuring the cheapest products and the other the most expensive ones. Let's begin by showing the list of the cheapest products:
+
+```{r}
+Cheapest_DIA <-Products_dia %>% 
+  group_by(Product) %>% 
+  slice_min(order_by = Price, with_ties = FALSE)
+Cheapest_DIA
+```
+
+NOTE: When using these code chunks, it is essential to include the argument *with_ties = FALSE*. Otherwise, when there are different products of the same category with the same price, we may end up with more than one product in each category, resulting in an unfair analysis.
+
+To calculate the total cost of the shopping list, we will use the prices of the least expensive available products.
+
+```{r}
+SUM_Cheapest_DIA<-sum(Cheapest_DIA[, 'Price'], na.rm = TRUE) 
+SUM_Cheapest_DIA
+```
+
+The total cost of purchasing all these products at DIA supermarket is 39.09.
+
+Alternatively, we can also create a list of the most expensive products and calculate the difference in cost between purchasing the cheaper and more expensive options. It's worth noting that, in general, the cheaper products correspond to the white brand.
+
+```{r}
+Expensive_DIA<- Products_dia %>% 
+  group_by(Product) %>% 
+  slice_max(order_by = Price, with_ties = FALSE)
+Expensive_DIA
+```
+
+On the other hand, the most expensive products are typically from well-known brands. Additionally, we need to consider the different quantities available for comparison purposes. For example, when comparing two different olive oils, the cheaper one may refer to a single liter, while the more expensive one is sold in a 5-liter bottle.
+
+If we were to purchase the most expensive versions of each product from DIA, the total cost of the shopping list would be:
+
+```{r}
+Sum_Expensive_DIA<-sum(Expensive_DIA[, 'Price'], na.rm = TRUE)
+Sum_Expensive_DIA
+```
+
+After buying the most expensive products available at DIA supermarket, the total cost of purchasing all these items is 124.05. However, if we opt to buy the cheapest options for each product instead, we would be able to save:
+
+```{r}
+Sum_Expensive_DIA - SUM_Cheapest_DIA
+```
+
+The total cost of purchasing all of these products at the DIA supermarket is 166.92. However, if we decided to buy the cheapest options of products instead of the most expensive ones, we would be saving a total of 84.96. This significant savings means we could use that extra money to make additional purchases.
+
+### Getting nice plots.
+
+The first thing we decided to plot was the different products we have in our data frame along with their prices. To accomplish this, we found the easiest way was to plot the product descriptions on the x-axis and the prices on the y-axis. By introducing the product description on the x-axis, we can uniquely identify each product without any overlap. If we had used the product name on the x-axis, there could have been overlapping among different products, making it difficult to distinguish between them.
+
+```{r, fig.align = 'center'}
+S<-ggplot(Products_dia, aes(Description, Price))+
+  geom_point(aes(color = Price)) +
+  scale_color_viridis(option = "D")+
+  theme_minimal() +
+  theme(axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank())+
+  labs(x = NULL, y = "Price in €")+
+  theme(legend.position = "right")
+ggplotly(S)
+```
+
+We can observe that the majority of basic products can be purchased in the supermarket for less than 10 euros, with the majority of them falling below the five euro range. There are only a few products that fall between the five and ten euro range. It is rare to find any products priced above ten euros. Let's take a closer look at these products manually to better understand why they are priced differently.
+
+```{r}
+Products_dia %>% 
+  filter(
+    Price > 10
+  )
+```
+
+Upon examining the graph, we can see that only 8 products have prices above 10 euros, namely milk and oil. However, despite their higher price point, these products are still in high demand, which accounts for their elevated figures on the graph. It's fascinating to see how the market can fluctuate and how consumer behavior impacts product pricing
+
+## Full scrapex for Carrefour.
+
+Now it's possible to continue with the case of Carrefour. We are loading the full scraper for Carrefour to obtain again our data frame with everything inside.
+
+```{r}
+links_carrefour <- 
+  c("https://www.carrefour.es/supermercado/la-despensa/alimentacion/aceites-y-vinagres/cat20066/c",
+  "https://www.carrefour.es/supermercado/la-despensa/alimentacion/arroz-y-cous-cous/cat20068/c",
+  "https://www.carrefour.es/supermercado/la-despensa/alimentacion-lentejas/F-108fZ13q6/c",
+  "https://www.carrefour.es/supermercado/la-despensa/alimentacion/legumbres-garbanzos/F-p8n3Z11kh/c",
+  "https://www.carrefour.es/supermercado/la-despensa/lacteos/leche/cat20093/c",
+  "https://www.carrefour.es/supermercado/la-despensa/alimentacion/pastas/cat20073/c",
+  "https://www.carrefour.es/supermercado/la-despensa/huevos/cat20021/c",
+  "https://www.carrefour.es/supermercado/la-despensa/alimentacion-cocktail-y-rosas-fideos/F-108fZ14ukZ131f/c",
+  "https://www.carrefour.es/supermercado/la-despensa/dulce-y-desayuno/cafes/cat20100/c",
+  "https://www.carrefour.es/supermercado/la-despensa/dulce-y-desayuno/galletas/cat20084/c",
+  "https://www.carrefour.es/supermercado/la-despensa/lacteos/mantequillas-y-margarinas/cat20095/c",
+  "https://www.carrefour.es/supermercado/limpieza-y-hogar/productos-para-toda-la-casa/suelos-fregasuelos/F-10wtZp64o/c",
+  "https://www.carrefour.es/supermercado/limpieza-y-hogar/productos-para-cocina/lavavajillas-a-mano/cat20295/c",
+  "https://www.carrefour.es/supermercado/la-despensa/yogures-y-postres/cat390008/c",
+  "https://www.carrefour.es/supermercado/la-despensa/alimentacion/sales-y-bicarbonatos/cat20075/c",
+  "https://www.carrefour.es/supermercado/perfumeria-e-higiene/bano-e-higiene-corporal/geles-de-bano-gel-de-bano/F-13s7Z14sh/c",
+  "https://www.carrefour.es/supermercado/perfumeria-e-higiene/bano-e-higiene-corporal/jabon-de-manos/cat20209/c",
+  "https://www.carrefour.es/supermercado/perfumeria-e-higiene/boca-y-sonrisa/dentifricos/cat20216/c",
+  "https://www.carrefour.es/supermercado/productos-frescos/charcuteria/cat20017/c",
+  "https://www.carrefour.es/supermercado/la-despensa/conservas-sopas-y-precocinados/conservas-de-pescado-y-marisco-atun-claro-en-aceite-de-oliva/F-109wZ14rj/c",
+  "https://www.carrefour.es/supermercado/la-despensa/conservas-sopas-y-precocinados/caldos-sopas-y-pure/cat20108/c",
+  "https://www.carrefour.es/supermercado/la-despensa/alimentacion-tomate-frito/F-108fZ1130/c")
+```
+
+We don't really understand the reasons behind, but this scraper takes such a very long time to be executed. This is why we are providing the final csv too, this way it's not necessary to spend more than 3 hours waiting to see the results.
+
+```{r}
+#Products_carrefour <- map_dfr(links_carrefour, carrefour_grabber)
+#write_csv(Products_carrefour, "Products_carrefour.csv")
+```
+
+```{r}
+Products_carrefour<- read_csv("Products_carrefour.csv") 
+head(Products_carrefour)
+```
+
+### Cleaning the data for Carrefour.
+
+Again, as it happened before, the raw data set obtained from the scraper tool had some rows to fix in order to make things more homogeneous for our graphic representation. The data needs to be harmonized before performimg comparisons among the two data frames. We will continue cleaning before our final analysis of the data set.
+
+Here you can find two ways in which we have been modifying and cutting some of the strings of our different variables. As we did before it was also necessary to transform the variable Price into numeric to perform our representation:
+
+```{r}
+Products_carrefour <-
+  Products_carrefour %>% 
+  mutate(
+    Description = str_replace_all(string = Description, pattern = " unidades de", replacement = ""),
+    Description = str_replace_all(string = Description, pattern = ",", replacement = ""),
+    Description = str_replace_all(string = Description, pattern = " de briks de", replacement = ""),
+    Description = str_replace_all(string = Description, pattern = " de brik de", replacement = ""),
+    Description = str_replace_all(string = Description, pattern = " de latas de", replacement = ""),
+    Description = str_replace_all(string = Description, pattern = " pack de", replacement = ""),
+    Description = str_replace_all(string = Description, pattern = " bricks de", replacement = ""),
+    Description = str_replace_all(string = Description, pattern = " latas de", replacement = ""),
+    Description = str_replace_all(string = Description, pattern = " tarros de", replacement = ""),
+    Price = str_replace_all(string = Price, pattern = " €", replacement = ""),
+    Price = as.numeric(str_replace_all(string = Price, pattern = ",", replacement = ".")),
+    Product = str_replace_all(string = Product, pattern = " ", replacement = ""),
+    Product = case_when(
+                    Product %in% c("Lenteja", "Lentejas") ~ "Lentejas",
+                    Product %in% c("Garbanzo", "Garbanzos") ~ "Garbanzos",
+                    Product %in% c("Fideos","Fideo", "Fideuá") ~ "Fideos",
+                    Product %in% c("Fregasuelos", "Friegasuelos") ~ "Friegasuelos",
+                    Product %in% c("Café","Cafe", "Chococino") ~ "Café",
+                    Product %in% c("Galletas", "Galleta") ~ "Galletas",
+                    Product %in% c("Sal", "Bicarbonato", "Molinillo") ~ "Sal",
+                    Product %in% c("Tiras", "Bacon", "Pechuga", "Salchichas", "Jamón", "Cintas", "Mini") ~ "Fiambre",
+                    Product %in% c("Espaguetis", "Macarrones", "Espirales", "Tiburón", "Gnocchi", "Plumas") ~ "Pasta",
+                    Product %in% "Leche" ~ "Leche",
+                    Product %in% c("Tomate", "Salsa") ~ "Salsas",
+                    Product %in% "Aceite" ~ "Aceite",
+                    Product %in% "Arroz" ~ "Arroz",
+                    Product %in% c("Margarina", "Mantequilla") ~ "Mantequilla/Margarina",
+                    Product %in% "Lavavajillas" ~ "Lavavajillas",
+                    Product %in% c("Atún", "Ventresca") ~ "Atún",
+                    Product %in% c("Huevos", "Clara") ~ "Huevos",
+                    Product %in% "Yogur" ~ "Yogurt",
+                    Product %in% c("Jabón", "Gel") ~ "Gel",
+                    Product %in% "Dentífrico" ~ "Dentifrico",
+                    Product %in% "Caldo" ~ "Caldo"
+                    )
+    ) %>% 
+  drop_na() 
+```
+
+We create this new column before joining both data frames to identify each one:
+
+```{r}
+Products_carrefour <- Products_carrefour %>% 
+  mutate(
+    Supermarket = "Carrefour"
+  )  %>% 
+  select(
+    Product, Supermarket, Brand, Description, Quantity, Price
+  )
+head(Products_carrefour)
+```
+
+### Basic analysis for Carrefour.
+
+As we did with the case of DIA, we can conduct a basic analysis of the different products for Carrefour. However, at this point, we cannot compare the shopping lists of both supermarkets because the products they carry are completely different. Nevertheless, we will be able to do so in further steps.
+
+For now, we will analyze the difference between buying the cheapest products versus the most expensive ones.
+
+```{r}
+Cheapest_Carrefour<- Products_carrefour %>% 
+  group_by(Product) %>% 
+  slice_min(order_by = Price, with_ties = FALSE)
+Cheapest_Carrefour
+```
+
+To calculate the total cost of the shopping list, we will use the prices of the least expensive available products.
+
+```{r}
+SUM_Cheapest_Carrefour<-sum(Cheapest_Carrefour[, 'Price'], na.rm = TRUE) 
+SUM_Cheapest_Carrefour
+```
+
+The total cost of purchasing all these products at Carrefour supermarket is 25.73, considering only one product for each different category.
+
+As we did in the previous case, we can now generate a list of the most expensive products and observe any potential differences between opting to purchase the cheapest versus the most expensive products. Once again, we must take into account the varying quantities of the products.
+
+```{r}
+Expensive_Carrefour<- Products_carrefour %>% 
+  group_by(Product) %>% 
+  slice_max(order_by = Price, with_ties = FALSE)
+Expensive_Carrefour
+```
+
+The concept remains the same as in previous cases. When we purchase the cheapest product available on the market, we may observe that the majority of branches stock the store brand. Conversely, when we opt for the most expensive product, the branches tend to carry the original brands.
+
+```{r}
+Sum_Expensive_Carrefour<-sum(Expensive_Carrefour[, 'Price'], na.rm = TRUE)
+Sum_Expensive_Carrefour
+```
+
+There is a significant difference between purchasing the most expensive or the cheapest product, as the total price differs greatly between the two.
+
+```{r}
+Sum_Expensive_Carrefour - SUM_Cheapest_Carrefour
+```
+
+When comparing the difference between the cheapest products and the most expensive ones, the result is quite significant. We observe that the price difference is almost 82.02 euros, which would allow us to make another weekly purchase.
+
+### Getting nice plots.
+
+The next step is to plot the overall distribution of different prices. We plan to do this similarly to what we did before, by plotting the different products and observing the general trend. Since we are considering basic products, we expect the distribution of prices to remain relatively consistent.
+
+```{r, fig.align = 'center'}
+p<-ggplot(Products_carrefour, aes(Description, Price))+
+  geom_point(aes(color = Price)) +
+  scale_color_viridis(option = "D")+
+  theme_minimal() +
+  theme(axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank())+
+  labs(x = NULL, y = "Price in €")+
+  theme(legend.position = "right")
+ggplotly(p)
+```
+
+The distribution of variables for the case of Carrefour is much cleaner than for the case of DIA, but still quite different. In this case, we can observe that the products are effectively priced below 10 euros, with only one that could be considered an outline priced above 20 euros.
+
+Additionally, we can use the mouse to navigate through the different prices and observe any possible patterns or trends.
+
+## Full dataframe and visualizations.
+
+```{r}
+Products_dia <-
+Products_dia %>% 
+  filter (Product != "pan de molde" & Product != "avecrem" & 
+          Product != "risotto" & Product != "quinoa" &
+          Product != "postre" & Product != "bicompartidos" &
+          Product != "crema" & Product != "mousse" &
+          Product != "kéfir" & Product != "pan de molde" &
+          Product != "bagels" & Product != "cruapán" &
+          Product != "paleta" & Product != "pastas" &
+          Product != "strellas" & Product != "mezcla")
+Products_carrefour$Product <- tolower(Products_carrefour$Product)
+Products_carrefour <-
+  Products_carrefour %>% 
+  filter(Product != "café" & Product != "atún" &
+          Product != "huevos" & Product != "lavavajillas" &
+          Product != "sal")
+Products_full <- rbind(Products_dia, Products_carrefour)
+head(Products_full)
+```
+
+We will start by introducing a plot that displays the different products we were able to scrape, sorted by supermarket. Thanks to the previous step of data cleaning, our data frame is now completely harmonized, allowing us to present you with the general trend.
+
+```{r, fig.align = 'center'}
+pp<-ggplot(Products_full, aes(Description, Price))+
+  geom_point(aes(color = Supermarket)) +
+  theme_minimal() +
+  theme(axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank())+
+  labs(x = NULL, y = "Price in €")+
+  theme(legend.position = "right")
+ggplotly(pp)
+```
+
+"Generally speaking, without analyzing the product at a very granular level, the products at DIA appear to be more expensive compared to those at Carrefour. This is evident from the larger number of blue points at higher positions, while the blue dots themselves are smaller.
+
+Now, let's compare the prices of the most expensive and cheapest shopping lists to determine which supermarket offers a more convincing option. We will look at which supermarket contains more products on the most expensive list and the cheapest list."
+
+```{r}
+Expensive_Full<- Products_full %>% 
+  group_by(Product) %>% 
+  slice_max(order_by = Price, with_ties = FALSE)
+Expensive_Full
+```
+
+In the previous table, we saw a list of the most expensive products. However, in this case, we want to focus on the supermarkets where these products originated. Let's obtain that information and see which supermarkets have the highest concentration of these products.
+
+```{r}
+table(Expensive_Full$Supermarket)
+```
+
+Interpreting the previous results, we can conclude that the product from DIA may be more expensive than the same product from Carrefour. However, we need to consider that we have less information about Carrefour due to problems with their webpage.
+
+Now, we will do the same to observe the behavior but for the opposite scenario, considering the least expensive product.
+
+```{r}
+Cheapest_Full<- Products_full %>% 
+  group_by(Product) %>% 
+  slice_min(order_by = Price, with_ties = FALSE)
+Cheapest_Full
+```
+
+```{r}
+table(Cheapest_Full$Supermarket)
+```
+
+Now the behavior is identical to the previous case. Therefore, after running both analyses, we cannot determine which supermarket is the most expensive or the least expensive. Although this is a good initial approach, it would be preferable to include more products and more supermarkets for a more comprehensive analysis.
+
+Finally, it would be beneficial to analyze the differences between the expensive and cheap supermarkets for both cases in this analysis. Starting with the cheapest one.
+
+```{r}
+Sum_Expensive_Full<-sum(Expensive_Full[, 'Price'], na.rm = TRUE)
+Sum_Expensive_Full
+```
+
+Considering the list of the most expensive products, the total cost of purchasing all of them is 109.42. However, we cannot determine if this is expensive or cheap without a comparison point. Therefore, let's calculate the total cost of purchasing the least expensive products.
+
+```{r}
+Sum_Cheapest_Full<-sum(Cheapest_Full[, 'Price'], na.rm = TRUE)
+Sum_Cheapest_Full
+```
+
+The difference in prices between the two cases is incredibly significant. Although we acknowledge that the quantities are not harmonized and that there are numerous differences, the prices in the two cases are vastly dissimilar.
+
+```{r}
+Sum_Expensive_Full - Sum_Cheapest_Full
+```
+
+There is a vast difference of almost 100 euros, which would allow us to purchase the cheapest list of products four times over.
+
+### Final Overall Plot.
+
+This plot illustrates the distribution of the frequencies of prices for all common products within our dataset. It is evident that the quantity of each product influences the analysis. There are more DIA products and a higher probability that products with larger quantities are included in the data set. This is particularly clear for milk and oil, which can be sold in packs of 6 or bottles of 5 liters. By looking at the plot, we can observe that there is no clear trend in the prices of the products, meaning that it is difficult to tell which one tends to be more expensive.
+
+```{r, fig.align = 'center'}
+Products_full %>% 
+  ggplot() +
+  aes(Price, Product, fill= Supermarket) +
+  geom_boxplot() +
+  labs(y=NULL)
+```
+
+In this case, it is also difficult to determine which supermarket is cheaper and which is more expensive. There are some products that are cheaper in DIA compared to Carrefour and viceversa. Therefore, there is no clear tendency in terms of which supermarket is cheaper and which is more expensive. We still have the problem of quantities in this case anyway.
+
+```{r, fig.align = 'center'}
+Products_full %>% filter (
+  Product == "lentejas" | Product == "salsas" | Product == "mantequilla/margarina" | 
+    Product == "galletas" | Product == "yogurt" | Product == "fiambre"
+  ) %>%
+  ggplot() +
+  aes(Price, Product, fill= Supermarket) +
+  geom_boxplot() +
+  labs(y=NULL)
+```
+
+Comparing products can be made more appropiately by filtering them taking into account the amounts. For example, if we compare the prices of "friegasuelos" in DIA and Carrefour, it is clear that the ones in DIA are much more expensive than the ones in Carrefour. This would be the more accurate way of comparing products across different stores, helping shoppers make the best decisions when it comes to their purchases. However to complete this in a deeper way we would need a bigger data set.
+
+```{r, fig.align = 'center'}
+Products_full %>% filter (Product == "friegasuelos" & Quantity == "1.5 lt" |
+                          Product == "friegasuelos" & Quantity == "1,5 lt" |
+                          Product == "friegasuelos" & Quantity == "1,5 l.") %>% 
+  ggplot() +
+  aes(Price, Product, fill= Supermarket) +
+  geom_boxplot() +
+  labs(y=NULL) 
+```
+
+## Conclusions.
+
+-   We consider this project to be an initial attempt to effectively scrape different products from a supermarket's website. However, additional work is required to harmonize and obtain more comprehensive details.
+
+-   Dealing with the various webpages was extremely tedious, particularly in the case of Carrefour. We believe that having tools to streamline this process would be beneficial.
+
+-   The data cleaning step is often the most challenging aspect of any project and can be time-consuming to ensure that the information is properly formatted and organized.
+
+-   We cannot definitively determine which supermarket is the least expensive, but the trend suggests that Carrefour may be slightly cheaper.
